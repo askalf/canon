@@ -5,6 +5,6 @@ import { scanMcpTools } from '@askalf/warden/mcp';
 
 /** Scan a loaded skill for poisoning. → { verdict: 'clean'|'flagged', findings } */
 export function scanSkill(skill) {
-  const findings = scanMcpTools(skill.scanTargets || []);
+  const findings = scanMcpTools((skill && skill.scanTargets) || []);
   return { verdict: findings.length ? 'flagged' : 'clean', findings };
 }

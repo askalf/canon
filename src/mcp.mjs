@@ -32,7 +32,7 @@ export function inspectServer(line, state, opts = {}) {
     const blockAll = opts.strict && report.some((r) => r.status !== 'vetted'); // strict: any problem → block the whole server
     for (const r of report) if (r.status !== 'vetted') { state.blocked.add(r.tool); opts.onWarn?.(`${blockAll ? 'strict — blocking all (' : 'dropped '}${r.tool} (${r.status})${blockAll ? ')' : ''}`); }
     const keep = blockAll ? new Set() : allowed;
-    msg.result.tools = msg.result.tools.filter((t) => keep.has(t.name));
+    msg.result.tools = msg.result.tools.filter((t) => t && typeof t === 'object' && keep.has(t.name));
     return { forward: JSON.stringify(msg) };
   }
   if (method && msg.id != null) delete state.pending[msg.id];

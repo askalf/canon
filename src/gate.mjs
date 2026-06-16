@@ -12,7 +12,13 @@ const toolHash = (t) => sha256(canonicalJson(t));
  * status: vetted | drifted | unvetted | unpinned | poisoned
  */
 export function gateTools(tools = [], entry = null) {
-  const parts = (entry && entry.parts) || {};
+  // Fail-safe: a hostile MCP server can advertise a non-array tool list or
+  // null/primitive entries. A non-array yields an empty gate (nothing vetted →
+  // everything dropped downstream); malformed entries are filtered out (they're
+  // never "vetted", so dropping them is the safe outcome).
+  if (!Array.isArray(tools)) return { report: [], allowed: new Set() };
+  tools = tools.filter((t) => t && typeof t === 'object');
+  const parts = (entry && entry.parts && typeof entry.parts === 'object') ? entry.parts : {};
   const poisoned = new Set(scanSkill({ scanTargets: tools }).findings.map((f) => f.tool));
   const report = tools.map((t) => {
     const status =
