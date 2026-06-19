@@ -2,7 +2,8 @@
 // canon CLI — vet, pin, and verify agent skills & MCP servers.
 // Exit code is a CI gate: 0 = all clean, 1 = anything flagged / drifted / poisoned.
 import { spawnSync } from 'node:child_process';
-import { scan, pin, verify, diff, readLock } from './index.mjs';
+import fs from 'node:fs';
+import { scan, pin, verify, diff, readLock, ensureKey, keyId, trustKey, untrustKey, listTrust } from './index.mjs';
 
 const argv = process.argv.slice(2);
 const sep = argv.indexOf('--');
@@ -15,7 +16,7 @@ const opt = (name, def) => {
   const eq = pre.find((x) => x.startsWith(name + '='));
   return eq ? eq.slice(name.length + 1) : def;
 };
-const VALUE_FLAGS = new Set(['--lock', '--name']); // consume the next token as a value
+const VALUE_FLAGS = new Set(['--lock', '--name', '--trust']); // consume the next token as a value
 const sources = (() => {
   const out = [];
   for (let i = 1; i < pre.length; i++) {
@@ -26,12 +27,13 @@ const sources = (() => {
   return out;
 })();
 const lockPath = opt('--lock', 'canon.lock');
+const optTrust = () => { const t = opt('--trust', undefined); return typeof t === 'string' ? t : undefined; };
 
 const tty = process.stdout.isTTY;
 const C = { red: '\x1b[31m', grn: '\x1b[32m', yel: '\x1b[33m', dim: '\x1b[2m', bold: '\x1b[1m', rst: '\x1b[0m' };
 const c = (col, s) => (tty ? col + s + C.rst : s);
 const out = (s = '') => process.stdout.write(s + '\n');
-const mark = { ok: c(C.grn, '✓'), clean: c(C.grn, '✓'), flagged: c(C.red, '☠'), poisoned: c(C.red, '☠'), drifted: c(C.yel, '⚠'), missing: c(C.yel, '?'), unsigned: c(C.yel, '⚠'), unpinned: c(C.dim, '·') };
+const mark = { ok: c(C.grn, '✓'), clean: c(C.grn, '✓'), flagged: c(C.red, '☠'), poisoned: c(C.red, '☠'), drifted: c(C.yel, '⚠'), missing: c(C.yel, '?'), unsigned: c(C.red, '⚠'), untrusted: c(C.red, '⚠'), unpinned: c(C.dim, '·') };
 const findingLine = (f) => `      ${c(C.red, '☠')} ${f.tool}: ${f.flags.join('; ')}`;
 
 function usage() {
@@ -39,10 +41,15 @@ function usage() {
 
   canon scan <source...>            poison-scan a skill / MCP manifest / directory
   canon add  <source...> [--sign]   vet + pin into ${lockPath} (refuses poisoned unless --force)
-  canon verify [--lock <file>]      re-check every pinned skill for drift / poisoning
+  canon verify [--lock <file>] [--trust <file>]   re-check every pinned skill for drift / poisoning
   canon diff <source> [--name <n>]  show what changed since it was pinned
   canon list                        show the pinned set
   canon guard [--lock <file>] -- <cmd...>   verify the lock, then run <cmd> only if it's clean
+
+  canon key                         print this machine's public key + id (share it to be trusted)
+  canon trust add <pubkey> --name <who> [--repo]   trust a publisher's key (--repo → commit it to canon.trust)
+  canon trust list                  show the trusted signing keys
+  canon trust remove <id>           stop trusting a key
 
   canon-mcp [--lock] [--name] [--strict] -- <mcp-server cmd...>
                                     enforce the lock on a LIVE MCP server: only vetted,
@@ -80,12 +87,14 @@ function runAdd() {
 }
 
 function runVerify() {
-  const { ok, results, error } = verify({ lockPath });
+  const { ok, results, error } = verify({ lockPath, trustPath: optTrust() });
   if (error) { out(c(C.red, `⛔ ${error}`)); return 1; }
   if (!results.length) { out(c(C.dim, `no pinned skills in ${lockPath}`)); return 0; }
   for (const r of results) {
-    out(`${mark[r.status] || '?'} ${c(C.bold, r.name)}  ${r.status}${r.signed ? c(C.dim, ' · signed') : ''}`);
+    const sig = r.signer ? c(C.dim, ` · signed by ${r.signer}`) : (r.signed ? c(C.dim, ' · signed') : '');
+    out(`${mark[r.status] || '?'} ${c(C.bold, r.name)}  ${r.status}${sig}`);
     if (r.status === 'drifted') out(c(C.dim, `      ${summary(r)}`));
+    if (r.status === 'untrusted') out(c(C.dim, `      key ${r.keyId} not trusted — canon trust add <pubkey> --name <publisher>`));
     if (r.status === 'poisoned') r.findings.forEach((f) => out(findingLine(f)));
   }
   out(ok ? c(C.grn, `\nall ${results.length} pinned skills verified`) : c(C.red, `\n${results.filter((r) => r.status !== 'ok').length}/${results.length} FAILED — review above`));
@@ -124,7 +133,7 @@ function runList() {
 
 function runGuard() {
   if (!post.length) { out('usage: canon guard [--lock <file>] -- <command...>'); return 2; }
-  const { ok, results, error } = verify({ lockPath });
+  const { ok, results, error } = verify({ lockPath, trustPath: optTrust() });
   if (error) { out(`${c(C.red, '⛔ canon: refusing to launch —')} ${error}`); return 1; }
   if (!ok) {
     const bad = results.filter((r) => r.status !== 'ok');
@@ -137,7 +146,53 @@ function runGuard() {
   return res.status ?? (res.error ? 127 : 0);
 }
 
-const table = { scan: runScan, add: runAdd, verify: runVerify, diff: runDiff, list: runList, guard: runGuard };
+function runKey() {
+  const { publicKey } = ensureKey();
+  const id = keyId(publicKey);
+  if (opt('--json', false)) { out(JSON.stringify({ id, publicKey: publicKey.trim() })); return 0; }
+  out(`${c(C.bold, 'key id')}  ${id}`);
+  out(publicKey.trim());
+  out(c(C.dim, `\nShare this key; whoever trusts you runs:  canon trust add <this-key-file> --name <you>`));
+  return 0;
+}
+
+function readKeyArg(arg) {
+  // accept a PEM file, or a JSON key file / `canon key --json` output ({ publicKey })
+  const raw = fs.readFileSync(arg, 'utf8');
+  if (raw.trim().startsWith('{')) { try { return JSON.parse(raw).publicKey; } catch {} }
+  return raw;
+}
+
+function runTrust() {
+  const action = sources[0] || 'list';
+  if (action === 'list') {
+    const keys = listTrust({ trustPath: optTrust() });
+    if (!keys.length) { out(c(C.dim, 'no trusted keys')); return 0; }
+    for (const k of keys) out(`${c(C.grn, '●')} ${c(C.bold, k.name)} ${c(C.dim, k.id)}`);
+    return 0;
+  }
+  if (action === 'add') {
+    if (!sources[1]) { out('usage: canon trust add <publicKeyFile> --name <label> [--repo]'); return 2; }
+    let pub;
+    try { pub = readKeyArg(sources[1]); } catch (e) { out(`${c(C.red, '✗')} ${e.message}`); return 1; }
+    try {
+      const repo = !!opt('--repo', false);
+      const r = trustKey(pub, opt('--name', undefined), { repo });
+      out(`${mark.ok} trusted ${c(C.bold, r.name)} ${c(C.dim, r.id)}${repo ? c(C.dim, ' · canon.trust') : ''}`);
+      return 0;
+    } catch (e) { out(`${c(C.red, '✗')} ${e.message}`); return 1; }
+  }
+  if (action === 'remove' || action === 'rm') {
+    if (!sources[1]) { out('usage: canon trust remove <keyId>'); return 2; }
+    const n = untrustKey(sources[1]);
+    out(n ? `${mark.ok} removed ${n} key(s)` : c(C.dim, 'no matching key'));
+    return 0;
+  }
+  out(`canon trust: unknown action '${action}' (add | list | remove)`);
+  return 2;
+}
+
+const table = { scan: runScan, add: runAdd, verify: runVerify, diff: runDiff, list: runList, guard: runGuard, key: runKey, trust: runTrust };
 if (!cmd || cmd === '-h' || cmd === '--help' || !table[cmd]) { usage(); process.exit(cmd && cmd !== '-h' && cmd !== '--help' ? 2 : 0); }
 try { process.exit(table[cmd]()); }
 catch (e) { process.stderr.write(`canon: ${e && e.message || e}\n`); process.exit(1); }
