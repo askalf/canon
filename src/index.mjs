@@ -4,10 +4,13 @@
 import { loadSkill, skillHash } from './skill.mjs';
 import { scanSkill } from './scan.mjs';
 import { readLock, writeLock, DEFAULT_LOCK } from './lock.mjs';
-import { signHash, verifyHashSig } from './sign.mjs';
+import { signHash, verifyHashSig, keyId, ensureKey } from './sign.mjs';
+import { loadTrust, trustedSigner, trustKey, untrustKey, listTrust } from './trust.mjs';
 import { sha256, canonicalJson } from './hash.mjs';
 
 export { loadSkill, skillHash, scanSkill, readLock, writeLock, DEFAULT_LOCK };
+export { signHash, verifyHashSig, keyId, ensureKey };
+export { loadTrust, trustedSigner, trustKey, untrustKey, listTrust };
 
 // A per-part hash map (files of a skill dir, or tools of an MCP server), so a
 // drift can be explained as added / removed / changed parts — not just "the hash moved".
@@ -51,15 +54,16 @@ export function pin(source, { lockPath = DEFAULT_LOCK, sign = false, force = fal
 /** Re-derive every pinned skill and classify it against the lock.
  *  Fails CLOSED on a missing or corrupt lock — a present-but-empty lock stays
  *  ok:true (legitimately nothing pinned). */
-export function verify({ lockPath = DEFAULT_LOCK } = {}) {
+export function verify({ lockPath = DEFAULT_LOCK, trustPath } = {}) {
   let lock;
   try { lock = readLock(lockPath, { mustExist: true }); }
   catch (e) { return { ok: false, error: e.message, results: [] }; }
-  const results = Object.entries(lock.skills).map(([name, entry]) => verifyOne(name, entry));
+  const trust = loadTrust({ trustPath });
+  const results = Object.entries(lock.skills).map(([name, entry]) => verifyOne(name, entry, trust));
   return { ok: results.every((r) => r.status === 'ok'), results };
 }
 
-function verifyOne(name, entry) {
+function verifyOne(name, entry, trust) {
   let skill;
   try { skill = loadSkill(entry.source); }
   catch { return { name, status: 'missing', source: entry.source }; }
@@ -67,11 +71,19 @@ function verifyOne(name, entry) {
   if (hash !== entry.hash) return { name, status: 'drifted', source: entry.source, ...diffParts(entry.parts, partsOf(skill)) };
   const s = scanSkill(skill);
   if (s.verdict === 'flagged') return { name, status: 'poisoned', source: entry.source, findings: s.findings };
-  // A signature that was STRIPPED from a signed entry must still fail: trust the
-  // recorded `signed` flag, not just a present `sig`, so deleting `sig` doesn't
-  // downgrade a tamper-stamped entry to "unsigned-but-ok".
-  if ((entry.signed || entry.sig) && !verifyHashSig(hash, entry.sig)) return { name, status: 'unsigned', source: entry.source };
-  return { name, status: 'ok', source: entry.source, signed: !!entry.sig };
+  if (entry.signed || entry.sig) {
+    // A signature that was STRIPPED or forged-against-a-different-hash fails the
+    // crypto check → `unsigned` (trust the recorded `signed` flag, not just a
+    // present `sig`, so deleting `sig` can't downgrade a tamper-stamp to "ok").
+    if (!verifyHashSig(hash, entry.sig)) return { name, status: 'unsigned', source: entry.source };
+    // Cryptographically valid, but anyone can sign with their OWN key — so the
+    // signer must be in your trust set. A valid signature from an unknown key is
+    // `untrusted` (fails closed), not silently accepted.
+    const signer = trustedSigner(entry.sig.pub, trust);
+    if (!signer) return { name, status: 'untrusted', source: entry.source, keyId: keyId(entry.sig.pub) };
+    return { name, status: 'ok', source: entry.source, signed: true, signer };
+  }
+  return { name, status: 'ok', source: entry.source, signed: false };
 }
 
 /** What changed in a source since it was pinned. */

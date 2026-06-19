@@ -70,7 +70,24 @@ So canon spans the whole lifecycle: **scan → pin → verify (CI) → enforce (
 
 `canon.lock` is your vetted set — **commit it**, like `package-lock.json`. One entry per trusted skill: where it came from, the content hash you trusted, the scan verdict at pin time, a per-part hash map (so a drift names the changed tools/files), and an optional Ed25519 signature.
 
-`--sign` stamps an entry with a signature over its content hash using a local key in `~/.canon` — a tamper-stamp: editing a hash in `canon.lock` without your key is caught on `verify`.
+`--sign` stamps an entry with an Ed25519 signature over its content hash. Editing a hash in `canon.lock` without the signing key is caught on `verify`.
+
+## Publisher signatures — trust *who* signed, not just *that* it changed
+
+A hash catches a change; a signature says **who vetted it**. `canon verify` checks every signed entry against your **trust set** — and a cryptographically valid signature from a key you *don't* trust fails closed (`untrusted`), it doesn't quietly pass:
+
+```bash
+# publisher — vet, sign, and publish your key
+canon add ./mcp-server.json --sign         # signs with your key in ~/.canon
+canon key                                  # prints your public key + id to hand out
+
+# consumer — trust the publisher once; every future version is then provenance-checked
+canon trust add publisher.pub --name acme  # add --repo to commit it to ./canon.trust
+canon verify                               # ✓ filesystem  ok · signed by acme
+#                                          # a signature from any other key → ⚠ untrusted, exit 1
+```
+
+Trust comes from three sources, unioned: your own machine's key (implicit, so a local `--sign` round-trips with no extra step), a user-global `~/.canon/trust.json`, and a repo-committed **`canon.trust`**. Commit `canon.trust` and a teammate's checkout — or your CI — verifies the publisher's signature with zero setup. Still deterministic and offline: no transparency log, no network.
 
 ## In CI
 
