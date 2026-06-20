@@ -20,7 +20,12 @@ export function gateTools(tools = [], entry = null) {
   tools = tools.filter((t) => t && typeof t === 'object');
   const parts = (entry && entry.parts && typeof entry.parts === 'object') ? entry.parts : {};
   const poisoned = new Set(scanSkill({ scanTargets: tools }).findings.map((f) => f.tool));
-  const nameCounts = {};
+  // null-prototype map: a tool whose name is a prototype member ("__proto__",
+  // "toString", "constructor", "hasOwnProperty", …) would otherwise read/clobber
+  // an inherited value, corrupting the count so the duplicate-name guard below
+  // silently never fires — letting a same-named poisoned twin ride in. (Same
+  // reason `parts` is probed with Object.hasOwn, not `in`, which walks the chain.)
+  const nameCounts = Object.create(null);
   for (const t of tools) nameCounts[t.name] = (nameCounts[t.name] || 0) + 1;
   const report = tools.map((t) => {
     const h = toolHash(t);
@@ -28,7 +33,7 @@ export function gateTools(tools = [], entry = null) {
       poisoned.has(t.name) ? 'poisoned'        // injection/exfil in name/desc/schema — never serve
         : !entry ? 'unpinned'                  // this server isn't in the lock at all
           : nameCounts[t.name] > 1 ? 'drifted' // duplicate name → not trustworthy by name
-            : !(t.name in parts) ? 'unvetted'  // a tool you never pinned (e.g. silently added)
+            : !Object.hasOwn(parts, t.name) ? 'unvetted'  // a tool you never pinned (e.g. silently added)
               : parts[t.name] !== h ? 'drifted' // pinned, but its definition changed
                 : 'vetted';
     return { tool: t.name, hash: h, status };
