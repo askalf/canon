@@ -43,10 +43,18 @@ export function keychainGet() {
   return null;
 }
 
-/** Store the value (string) in the OS keychain. The value is passed via stdin (not
- *  the command line) so it never appears in a process listing. */
+/** Store the value (string) in the OS keychain. On Linux (secret-tool) and Windows
+ *  (PowerShell DPAPI) the value goes via stdin, so it never appears in a process
+ *  listing. macOS `security` has NO stdin password input (its -w prompt reads /dev/tty,
+ *  not stdin), so there the value is passed as an argument — briefly visible in `ps` for
+ *  the command's duration. A CLI limitation; closing it fully needs the native Security
+ *  framework (a non-CLI follow-up). */
 export function keychainSet(value) {
   if (fake()) { fs.mkdirSync(path.dirname(fake()), { recursive: true }); fs.writeFileSync(fake(), JSON.stringify({ value }), { mode: 0o600 }); return; }
+  // macOS: `security` can't take the password on stdin (see note above), so it goes as an
+  // argument and is briefly visible in `ps`. Accepted CLI limitation — do NOT "fix" this
+  // with `-w` and no inline value: that reads /dev/tty, not stdin, and silently stores the
+  // wrong secret (caught by the macOS CI added in this change).
   if (process.platform === 'darwin') { run('security', ['add-generic-password', '-a', ACCOUNT, '-s', SERVICE, '-w', value, '-U']); return; }
   if (process.platform === 'linux') { run('secret-tool', ['store', '--label=canon signing key', 'service', SERVICE, 'account', ACCOUNT], value); return; }
   if (process.platform === 'win32') {
