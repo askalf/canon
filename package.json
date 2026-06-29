@@ -15,7 +15,7 @@
     "demo": "node demo/demo.mjs"
   },
   "dependencies": {
-    "@askalf/warden": "github:askalf/warden#2aaaa0cdcb2a21b13225c002f1879998ce88c7c2"
+    "@askalf/warden": "github:askalf/warden#f7b2499f100bb78887953b7855a1c18269783a4c"
   },
   "keywords": [
     "ai-agents",
