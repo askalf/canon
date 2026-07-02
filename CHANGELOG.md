@@ -4,6 +4,28 @@ All notable changes to **@askalf/canon** are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-07-02
+
+### Added
+- **Claude Code skills, first class** — the skills-marketplace surface:
+  - `canon scan --claude` / `canon add --claude [--sign]` discover and vet every
+    skill Claude Code can see (`.claude/skills/` project scope + `~/.claude/skills/`
+    user scope; a project skill shadows a same-named user skill, matching Claude
+    Code's own resolution). Project skills pin with portable forward-slash
+    relative paths, so a committed `canon.lock` verifies on any OS.
+  - **`canon hook claude`** — a Claude Code PreToolUse hook (matcher: `Skill`)
+    that re-checks the exact directory about to run at the moment it's invoked
+    and blocks it (exit 2, reason fed back to the model) if it drifted or turned
+    poisonous. Default policy protects the pinned set (unpinned skills pass);
+    `--strict` turns `canon.lock` into a whitelist and fails CLOSED on a missing
+    lock, an unresolvable skill (including `plugin:skill` forms), or a hook
+    error. A corrupt lock fails closed in both modes; a pinned skill that has
+    vanished from disk fails closed in both modes.
+  - Skill names are validated as names (no path separators, no `..`, no
+    dot-prefix), so a hostile `tool_input.skill` can't traverse out of the
+    skill roots.
+  - Library: `claudeSkillRoots` / `discoverClaudeSkills` / `resolveClaudeSkill`.
+
 ## [0.2.0] - 2026-06-19
 
 ### Added

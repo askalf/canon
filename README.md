@@ -22,6 +22,7 @@ canon verify                          # re-check every pinned skill for drift / 
 canon diff ./mcp-server.json          # what changed since you pinned it
 canon list                            # the pinned set
 canon guard -- npm start              # verify the lock, then launch only if it's clean
+canon add --claude --sign             # pin every Claude Code skill (.claude/skills) — then gate them with `canon hook claude`
 ```
 
 ```text
@@ -59,6 +60,32 @@ canon guard -- npm start        # refuses to launch (exit 1) if any pinned skill
 ```
 
 So canon spans the whole lifecycle: **scan → pin → verify (CI) → enforce (runtime).** Where [warden](https://github.com/askalf/warden) firewalls what a tool *does*, canon-mcp gates which tools *exist*.
+
+## Gate Claude Code skills
+
+Claude Code loads **skills** — instruction directories under `.claude/skills/` (project scope) and `~/.claude/skills/` (user scope) — and marketplaces now distribute them. That is exactly the surface canon exists for: a skill is prose that steers an agent holding your privileges, and a silent update to one shows up in no diff you'll ever read.
+
+Pin everything Claude Code can see, then gate every invocation:
+
+```bash
+canon add --claude --sign     # vet + pin every visible skill (a project skill shadows a same-named user skill, like Claude Code itself)
+canon scan --claude           # or just scan them
+```
+
+Wire the hook into `.claude/settings.json`, and the **exact directory about to run** is re-checked at the moment the skill is invoked — a drifted or poisoned skill is blocked (exit 2), with the reason fed back to the model:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Skill",
+        "hooks": [{ "type": "command", "command": "npx -y github:askalf/canon hook claude" }] }
+    ]
+  }
+}
+```
+
+By default the hook protects the **pinned** set — unpinned skills pass, so adoption never breaks a session. `--strict` turns `canon.lock` into a whitelist: an unpinned skill, an unresolvable `plugin:skill`, a missing lock — even a crashed hook — all fail **closed**. A corrupt lock fails closed in both modes. Commit `canon.lock`, and the same file gates CI (`canon verify`), `canon-mcp`, and every teammate's sessions.
 
 ## What you can pin
 
