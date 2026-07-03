@@ -81,24 +81,47 @@ function* pluginDirs() {
   }
 }
 
+function collectPluginSkills(pluginDir, marketplace, seen) {
+  const plugin = pluginName(pluginDir);
+  if (!plugin) return;
+  let skills = [];
+  try { skills = fs.readdirSync(path.join(pluginDir, 'skills'), { withFileTypes: true }); } catch { return; }
+  for (const s of skills.filter((e) => e.isDirectory())) {
+    if (!SKILL_NAME.test(s.name)) continue;
+    const skillDir = path.join(pluginDir, 'skills', s.name);
+    const name = `${plugin}:${s.name}`;
+    if (hasSkillMd(skillDir) && !seen.has(name)) seen.set(name, { name, dir: skillDir, scope: 'plugin', marketplace });
+  }
+}
+
 /** Every skill shipped by installed marketplace plugins, keyed the way Claude
  *  Code invokes them. → [{ name: 'plugin:skill', dir, scope: 'plugin', marketplace }]
  *  Disk is the source of truth — whether the plugin is currently ENABLED isn't
  *  consulted (an enable is one click away; pin what could run). */
 export function discoverClaudePluginSkills() {
   const seen = new Map();
-  for (const { marketplace, dir } of pluginDirs()) {
-    const plugin = pluginName(dir);
-    if (!plugin) continue;
-    let skills = [];
-    try { skills = fs.readdirSync(path.join(dir, 'skills'), { withFileTypes: true }); } catch { continue; }
-    for (const s of skills.filter((e) => e.isDirectory())) {
-      if (!SKILL_NAME.test(s.name)) continue;
-      const skillDir = path.join(dir, 'skills', s.name);
-      const name = `${plugin}:${s.name}`;
-      if (hasSkillMd(skillDir) && !seen.has(name)) seen.set(name, { name, dir: skillDir, scope: 'plugin', marketplace });
+  for (const { marketplace, dir } of pluginDirs()) collectPluginSkills(dir, marketplace, seen);
+  return [...seen.values()];
+}
+
+/** Discover plugin skills under an EXPLICIT root — a cloned marketplace repo
+ *  (`plugins/` + `external_plugins/` trees) or a single-plugin repo (`skills/`
+ *  at the top, usually with `.claude-plugin/plugin.json`). Same `plugin:skill`
+ *  naming as the live-marketplace discovery, so a study scan, a pin, and the
+ *  hook all agree on identity. Offline by design: point it at a clone you made. */
+export function discoverMarketplaceSkills(root) {
+  const seen = new Map();
+  const resolved = path.resolve(String(root || '.'));
+  const label = path.basename(resolved);
+  for (const kind of ['plugins', 'external_plugins']) {
+    const base = path.join(resolved, kind);
+    let entries = [];
+    try { entries = fs.readdirSync(base, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries.filter((x) => x.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
+      collectPluginSkills(path.join(base, e.name), label, seen);
     }
   }
+  if (!seen.size) collectPluginSkills(resolved, label, seen); // a single-plugin repo
   return [...seen.values()];
 }
 

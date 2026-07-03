@@ -72,6 +72,7 @@ Pin everything Claude Code can see, then gate every invocation:
 canon add --claude --sign            # vet + pin every project/user skill (a project skill shadows a same-named user skill, like Claude Code itself)
 canon add --claude-plugins --sign    # …and every skill shipped by installed marketplace plugins, under its `plugin:skill` name
 canon hook install                   # wire the gate into this repo's .claude/settings.json (idempotent; --user for ~/.claude)
+canon scan --marketplace ./clone     # audit a marketplace or plugin repo you cloned — BEFORE you install from it
 ```
 
 `hook install` writes one canon-owned `PreToolUse` entry (and never touches your other hooks — it refuses an unparseable settings file rather than clobber it):
