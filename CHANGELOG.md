@@ -4,6 +4,18 @@ All notable changes to **@askalf/canon** are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-07-03
+
+### Added
+- **`canon scan/add --marketplace <dir>`** — poison-scan (or vet + pin) a
+  **cloned** marketplace or plugin repo: discovers every plugin skill under
+  `plugins/` + `external_plugins/` trees, or treats the root as a single-plugin
+  repo (`skills/` + `.claude-plugin/plugin.json`), under the same
+  `plugin:skill` names as the live-marketplace discovery. canon stays offline
+  by design — you fetch (git clone, at whatever ref/sha you're vetting), canon
+  scans. This is the reproducible primitive behind auditing a marketplace
+  catalog end to end. Library: `discoverMarketplaceSkills`.
+
 ## [0.5.0] - 2026-07-02
 
 ### Changed

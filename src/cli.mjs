@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { scan, pin, verify, diff, readLock, ensureKey, keyId, trustKey, untrustKey, listTrust, loadSkill, skillHash, scanSkill } from './index.mjs';
-import { discoverClaudeSkills, discoverClaudePluginSkills, resolveClaudeSkill } from './claude.mjs';
+import { discoverClaudeSkills, discoverClaudePluginSkills, discoverMarketplaceSkills, resolveClaudeSkill } from './claude.mjs';
 
 const argv = process.argv.slice(2);
 const sep = argv.indexOf('--');
@@ -19,7 +19,7 @@ const opt = (name, def) => {
   const eq = pre.find((x) => x.startsWith(name + '='));
   return eq ? eq.slice(name.length + 1) : def;
 };
-const VALUE_FLAGS = new Set(['--lock', '--name', '--trust', '--settings', '--command']); // consume the next token as a value
+const VALUE_FLAGS = new Set(['--lock', '--name', '--trust', '--settings', '--command', '--marketplace']); // consume the next token as a value
 const sources = (() => {
   const out = [];
   for (let i = 1; i < pre.length; i++) {
@@ -42,11 +42,15 @@ const portable = (dir) => {
   const rel = path.relative(process.cwd(), dir);
   return (rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : dir).replace(/\\/g, '/');
 };
-const allSources = () => [
-  ...sources.map((src) => ({ src })),
-  ...(opt('--claude', false) ? discoverClaudeSkills().map(({ dir }) => ({ src: portable(dir) })) : []),
-  ...(opt('--claude-plugins', false) ? discoverClaudePluginSkills().map(({ name, dir }) => ({ src: portable(dir), name })) : []),
-];
+const allSources = () => {
+  const mkt = opt('--marketplace', undefined); // a CLONED marketplace/plugin repo (canon stays offline — you fetch, it scans)
+  return [
+    ...sources.map((src) => ({ src })),
+    ...(opt('--claude', false) ? discoverClaudeSkills().map(({ dir }) => ({ src: portable(dir) })) : []),
+    ...(opt('--claude-plugins', false) ? discoverClaudePluginSkills().map(({ name, dir }) => ({ src: portable(dir), name })) : []),
+    ...(typeof mkt === 'string' ? discoverMarketplaceSkills(mkt).map(({ name, dir }) => ({ src: portable(dir), name })) : []),
+  ];
+};
 
 const tty = process.stdout.isTTY;
 const C = { red: '\x1b[31m', grn: '\x1b[32m', yel: '\x1b[33m', dim: '\x1b[2m', bold: '\x1b[1m', rst: '\x1b[0m' };
@@ -64,6 +68,7 @@ function usage() {
   canon add  --claude [--sign]      vet + pin them all
   canon scan --claude-plugins       …and every skill shipped by installed marketplace plugins
   canon add  --claude-plugins       vet + pin those under their \`plugin:skill\` invocation name
+  canon scan --marketplace <dir>    poison-scan a CLONED marketplace or plugin repo (you fetch, canon scans)
   canon verify [--lock <file>] [--trust <file>]   re-check every pinned skill for drift / poisoning
   canon diff <source> [--name <n>]  show what changed since it was pinned
   canon list                        show the pinned set

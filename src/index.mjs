@@ -11,7 +11,7 @@ import { sha256, canonicalJson } from './hash.mjs';
 export { loadSkill, skillHash, scanSkill, readLock, writeLock, DEFAULT_LOCK };
 export { signHash, verifyHashSig, keyId, ensureKey };
 export { loadTrust, trustedSigner, trustKey, untrustKey, listTrust };
-export { claudeSkillRoots, discoverClaudeSkills, discoverClaudePluginSkills, resolveClaudeSkill } from './claude.mjs';
+export { claudeSkillRoots, discoverClaudeSkills, discoverClaudePluginSkills, discoverMarketplaceSkills, resolveClaudeSkill } from './claude.mjs';
 
 // A per-part hash map (files of a skill dir, or tools of an MCP server), so a
 // drift can be explained as added / removed / changed parts — not just "the hash moved".
