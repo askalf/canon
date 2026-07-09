@@ -1,7 +1,9 @@
-# Standing watch: re-scan the official Claude Code plugin marketplace weekly
-# and publish the snapshot to the `watch` branch (badge.json drives the README
-# badge; WATCH.md is the human report; history.jsonl accumulates one line per
-# run). A poisoned skill turns the run red AND ships in the snapshot.
+# Standing watch: re-scan the official Claude Code plugin DIRECTORY weekly —
+# every catalog plugin, including the external vendor plugins fetched at their
+# catalog-pinned SHAs — and publish the snapshot to the `watch` branch
+# (badge.json drives the README badge; WATCH.md is the human report;
+# history.jsonl accumulates one line per run). A poisoned skill turns the run
+# red AND ships in the snapshot.
 name: marketplace-watch
 
 on:
@@ -15,20 +17,32 @@ permissions:
 jobs:
   watch:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install canon
         run: npm install --no-fund --no-audit
 
-      - name: Clone the marketplace at today's tip
-        run: git clone --depth 1 https://github.com/anthropics/claude-code.git "$RUNNER_TEMP/marketplace"
+      - name: Clone the plugin directory at today's tip
+        run: git clone --depth 1 https://github.com/anthropics/claude-plugins-official.git "$RUNNER_TEMP/directory"
 
-      - name: Scan every marketplace skill
+      - name: Fetch every catalog plugin at its pinned sha
+        run: |
+          node support/marketplace-fetch.mjs "$RUNNER_TEMP/directory" "$RUNNER_TEMP/corpus" | tee "$RUNNER_TEMP/fetch-summary.json"
+          {
+            echo '### marketplace fetch'
+            echo ''
+            echo '```json'
+            cat "$RUNNER_TEMP/fetch-summary.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Scan every directory skill
         id: scan
         run: |
           status=0
-          node support/marketplace-watch.mjs "$RUNNER_TEMP/marketplace" "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/summary.json" || status=$?
+          node support/marketplace-watch.mjs "$RUNNER_TEMP/corpus" "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/summary.json" || status=$?
           if [ "$status" -ge 2 ]; then exit "$status"; fi # 2 = the watch itself broke; 1 (poisoned) still publishes below
           echo "status=$status" >> "$GITHUB_OUTPUT"
           {
