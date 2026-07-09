@@ -1,31 +1,82 @@
 #!/usr/bin/env node
-// Standing watch over a cloned marketplace repo: discover every plugin skill,
-// scan each, and emit machine-readable results for the `watch` branch —
+// Standing watch over the official plugin directory: scan every catalog
+// plugin's skills and emit machine-readable results for the `watch` branch —
 // badge.json (shields.io endpoint), WATCH.md (human report), results.json
 // (full rows), and a history.jsonl line appended by the workflow.
 //
-//   node support/marketplace-watch.mjs <marketplace-clone> <out-dir>
+//   node support/marketplace-watch.mjs <corpus-or-clone> <out-dir>
 //
+// The root is either a corpus materialized by marketplace-fetch.mjs (detected
+// by its canon-corpus.json — the full directory: in-repo plugins + external
+// vendor plugins at their catalog-pinned SHAs) or, legacy mode, a plain
+// marketplace clone (`plugins/` + `external_plugins/` trees) scanned in place.
 // Exit 0 when nothing is poisoned; exit 1 the moment anything flags, so the
 // scheduled run goes red and someone looks. Offline like the rest of canon:
-// the workflow fetches the clone, this script only reads disk.
+// the workflow fetches, this script only reads disk.
 import fs from 'node:fs';
 import path from 'node:path';
-import { scan, discoverMarketplaceSkills } from '../src/index.mjs';
+import { fileURLToPath } from 'node:url';
+import { scan, skillHash, discoverMarketplaceSkills } from '../src/index.mjs';
 
-const [root, outDir] = process.argv.slice(2);
-if (!root || !outDir) {
-  console.error('usage: marketplace-watch.mjs <marketplace-clone> <out-dir>');
+const ADVISORY_ROWS_SHOWN = 80; // WATCH.md stays readable; results.json has every row
+
+// Reviewed-benign findings, accepted with canon's `--force` semantics: each
+// entry accepts a skill's findings for EXACTLY the bytes reviewed (keyed by
+// skill hash). Any drift — or new findings on other skills — flags as usual.
+let accepted = {};
+try { accepted = JSON.parse(fs.readFileSync(fileURLToPath(new URL('watch-accepted.json', import.meta.url)), 'utf8')); } catch { /* no accept file = accept nothing */ }
+
+const [rootArg, outDir] = process.argv.slice(2);
+if (!rootArg || !outDir) {
+  console.error('usage: marketplace-watch.mjs <corpus-or-clone> <out-dir>');
   process.exit(2);
 }
+const root = path.resolve(rootArg);
+const manifestPath = path.join(root, 'canon-corpus.json');
+const corpusMode = fs.existsSync(manifestPath);
 
-const skills = discoverMarketplaceSkills(root);
-if (!skills.length) {
-  console.error(`no plugin skills discovered under ${root} — wrong clone, or the marketplace layout changed`);
-  process.exit(2);
+// ── Collect the skills to scan: [{ name, dir }] plus per-plugin bookkeeping ──
+const skills = [];
+const pinDrift = []; // scanned, but at the catalog ref, not the pinned sha
+const fetchErrors = []; // catalog rows the fetch step could not materialize
+let plugins = 0;
+if (corpusMode) {
+  let manifest;
+  try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) {
+    console.error(`unreadable corpus manifest ${manifestPath}: ${e.message}`);
+    process.exit(2);
+  }
+  const entries = Array.isArray(manifest.entries) ? manifest.entries : [];
+  plugins = entries.length;
+  const seen = new Set();
+  for (const row of entries) {
+    if (row.status !== 'ok' && row.status !== 'ref-fallback') { fetchErrors.push(row); continue; }
+    if (row.status === 'ref-fallback') pinDrift.push(row);
+    for (const s of discoverMarketplaceSkills(row.dir)) {
+      // Namespace by the CATALOG name; keep the inner name when a vendor repo
+      // nests its own plugin name (or a whole plugins/ tree) under it.
+      const inner = s.name.startsWith(`${row.name}:`) ? s.name : `${row.name}/${s.name}`;
+      if (seen.has(inner)) continue;
+      seen.add(inner);
+      skills.push({ name: inner, dir: s.dir });
+    }
+  }
+  if (!plugins) {
+    console.error(`corpus manifest ${manifestPath} lists no plugins — fetch step broke?`);
+    process.exit(2);
+  }
+} else {
+  for (const s of discoverMarketplaceSkills(root)) skills.push(s);
+  plugins = new Set(skills.map((s) => s.name.split(':')[0])).size;
+  if (!skills.length) {
+    console.error(`no plugin skills discovered under ${root} — wrong clone, or the marketplace layout changed`);
+    process.exit(2);
+  }
 }
 
+// ── Scan ──
 const flaggedRows = [];
+const acceptedRows = [];
 const advisoryRows = [];
 let advisoryCount = 0;
 for (const s of skills) {
@@ -33,7 +84,10 @@ for (const s of skills) {
   const advisories = (r.advisories || []).map((f) => `${f.tool}: ${f.flags.join('; ')}`);
   advisoryCount += advisories.length;
   if (r.verdict !== 'clean') {
-    flaggedRows.push({ name: s.name, verdict: r.verdict, findings: r.findings.map((f) => `${f.tool}: ${f.flags.join('; ')}`) });
+    const findings = r.findings.map((f) => `${f.tool}: ${f.flags.join('; ')}`);
+    const a = accepted[s.name];
+    if (a && a.hash === skillHash(r.skill)) acceptedRows.push({ name: s.name, findings, class: a.class, note: a.note });
+    else flaggedRows.push({ name: s.name, verdict: r.verdict, findings });
   } else if (advisories.length) {
     advisoryRows.push({ name: s.name, advisories });
   }
@@ -41,7 +95,7 @@ for (const s of skills) {
 
 const scannedAt = new Date().toISOString();
 const poisoned = flaggedRows.length;
-const summary = { scannedAt, skills: skills.length, poisoned, advisories: advisoryCount };
+const summary = { scannedAt, plugins, skills: skills.length, poisoned, accepted: acceptedRows.length, advisories: advisoryCount, pinDrift: pinDrift.length, fetchErrors: fetchErrors.length };
 
 fs.mkdirSync(outDir, { recursive: true });
 const write = (name, data) => fs.writeFileSync(path.join(outDir, name), data);
@@ -49,18 +103,25 @@ const write = (name, data) => fs.writeFileSync(path.join(outDir, name), data);
 write('badge.json', JSON.stringify({
   schemaVersion: 1,
   label: 'marketplace watch',
-  message: `${skills.length} skills · ${poisoned} poisoned · ${advisoryCount} advisories`,
-  color: poisoned ? 'red' : 'brightgreen',
+  message: `${plugins} plugins · ${skills.length} skills · ${poisoned} poisoned · ${advisoryCount} advisories`,
+  color: poisoned ? 'red' : (fetchErrors.length ? 'orange' : 'brightgreen'),
 }) + '\n');
 
-write('results.json', JSON.stringify({ ...summary, flagged: flaggedRows, advisoryDetail: advisoryRows }, null, 2) + '\n');
+write('results.json', JSON.stringify({
+  ...summary,
+  flagged: flaggedRows,
+  acceptedDetail: acceptedRows,
+  advisoryDetail: advisoryRows,
+  pinDriftDetail: pinDrift.map((r) => ({ name: r.name, url: r.url, sha: r.sha, ref: r.ref, actualSha: r.actualSha, error: r.error })),
+  fetchErrorDetail: fetchErrors.map((r) => ({ name: r.name, url: r.url, status: r.status, error: r.error })),
+}, null, 2) + '\n');
 
 const md = [];
 md.push('# canon marketplace watch');
 md.push('');
-md.push(`> The official Claude Code plugin marketplace ([anthropics/claude-code](https://github.com/anthropics/claude-code) \`plugins/\` tree), re-scanned on a schedule by [canon](https://github.com/askalf/canon). Latest snapshot — history in [history.jsonl](./history.jsonl), methodology in [the 2,019-skill study](https://sprayberrylabs.com/blog/auditing-the-skills-supply-chain).`);
+md.push(`> The official Claude Code plugin directory ([anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)) — every catalog plugin, including the external vendor plugins fetched at their catalog-pinned SHAs — re-scanned on a schedule by [canon](https://github.com/askalf/canon). Latest snapshot — history in [history.jsonl](./history.jsonl), methodology in [the 2,019-skill study](https://sprayberrylabs.com/blog/auditing-the-skills-supply-chain).`);
 md.push('');
-md.push(`**${scannedAt.slice(0, 10)}** — **${skills.length}** skills scanned · **${poisoned}** poisoned · **${advisoryCount}** advisories`);
+md.push(`**${scannedAt.slice(0, 10)}** — **${plugins}** plugins · **${skills.length}** skills scanned · **${poisoned}** poisoned · **${advisoryCount}** advisories`);
 md.push('');
 if (poisoned) {
   md.push('## ☠ Poisoned');
@@ -70,13 +131,46 @@ if (poisoned) {
   }
   md.push('');
 }
+if (acceptedRows.length) {
+  md.push('## Accepted findings (reviewed benign)');
+  md.push('');
+  md.push('Skills whose findings were manually reviewed and accepted for **exactly these bytes** ([watch-accepted.json](https://github.com/askalf/canon/blob/master/support/watch-accepted.json), canon\'s `--force` semantics) — any content change re-flags them.');
+  md.push('');
+  for (const r of acceptedRows) {
+    md.push(`- **${r.name}** — ${r.findings.join(' · ')} — *${r.class}${r.note ? `: ${r.note}` : ''}*`);
+  }
+  md.push('');
+}
+if (pinDrift.length) {
+  md.push('## ⚠ Pin drift');
+  md.push('');
+  md.push('The catalog-pinned sha was unfetchable from the vendor repo (rewritten history, or the pin never existed there); the scan proceeded on the catalog ref instead. A pin that stops resolving is itself supply-chain signal.');
+  md.push('');
+  for (const r of pinDrift) {
+    md.push(`- **${r.name}** — ${r.error || `pinned ${String(r.sha).slice(0, 12)} unfetchable, scanned ${r.ref}@${String(r.actualSha).slice(0, 12)}`}`);
+  }
+  md.push('');
+}
+if (fetchErrors.length) {
+  md.push('## ✗ Not scanned');
+  md.push('');
+  md.push('Catalog plugins the fetch step could not materialize this run (vendor repo gone or unreachable, or a broken catalog row) — counted, never silently dropped.');
+  md.push('');
+  for (const r of fetchErrors) {
+    md.push(`- **${r.name}** — ${r.error || r.status}`);
+  }
+  md.push('');
+}
 md.push('## Advisories');
 md.push('');
 md.push('Capability *mentions* (sensitive paths, secret env vars) in skill prose — shown, never blocking. Documentation legitimately teaches credential handling; only *instructions* block.');
 md.push('');
 if (advisoryRows.length) {
-  for (const r of advisoryRows) {
+  for (const r of advisoryRows.slice(0, ADVISORY_ROWS_SHOWN)) {
     md.push(`- **${r.name}** — ${r.advisories.join(' · ')}`);
+  }
+  if (advisoryRows.length > ADVISORY_ROWS_SHOWN) {
+    md.push(`- …and ${advisoryRows.length - ADVISORY_ROWS_SHOWN} more skills with advisories — full rows in [results.json](./results.json)`);
   }
 } else {
   md.push('*(none)*');
