@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2
+
+- **Renamed: `@askalf/canon` → `@askalf/truecopy`** (npm-publishable name; `canon` is squatted unscoped and the registry create-policy blocks colliding scoped names). GitHub repo becomes `askalf/truecopy` (old URLs redirect). Legacy `canon`/`canon-mcp` bin aliases retained alongside `truecopy`/`truecopy-mcp`.
+
 All notable changes to **@askalf/canon** are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
