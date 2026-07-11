@@ -8,6 +8,11 @@ import path from 'node:path';
 import { scan, pin, unpin, verify, diff, readLock, ensureKey, keyId, trustKey, untrustKey, listTrust, loadSkill, skillHash, scanSkill } from './index.mjs';
 import { discoverClaudeSkills, discoverClaudePluginSkills, discoverMarketplaceSkills, resolveClaudeSkill } from './claude.mjs';
 
+// This build's version — so `hook install` can PIN the gate command to a git tag
+// (a released version always has one) instead of fetching an unpinned ref at every
+// Skill invocation. Unreadable → unpinned fallback.
+const PKG_VERSION = (() => { try { return JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { return null; } })();
+
 const argv = process.argv.slice(2);
 const sep = argv.indexOf('--');
 const pre = sep >= 0 ? argv.slice(0, sep) : argv;
@@ -173,7 +178,14 @@ function runVerify() {
 
 function runDiff() {
   if (!sources.length) return (usage(), 2);
-  const r = diff(sources[0], { lockPath, name: opt('--name', undefined) });
+  let r;
+  try { r = diff(sources[0], { lockPath, name: opt('--name', undefined) }); }
+  catch (e) {
+    // an unreadable source / corrupt lock must not break the --json contract
+    // (one JSON document on stdout) — emit a JSON error, still exit 1
+    if (jsonOut) { out(JSON.stringify({ name: opt('--name', undefined) || sources[0], status: 'error', error: e.message })); return 1; }
+    out(`${c(C.red, '✗')} ${e.message}`); return 1;
+  }
   if (jsonOut) { out(JSON.stringify(r)); return r.status === 'drifted' || r.status === 'unpinned' ? 1 : 0; }
   out(`${mark[r.status] || '?'} ${c(C.bold, r.name)}  ${r.status}`);
   if (r.status === 'drifted') {
@@ -192,7 +204,13 @@ function summary(r) {
 }
 
 function runList() {
-  const lock = readLock(lockPath);
+  let lock;
+  try { lock = readLock(lockPath); }
+  catch (e) {
+    // a corrupt lock throws — keep the --json contract instead of an empty stdout
+    if (jsonOut) { out(JSON.stringify({ error: e.message, skills: [] })); return 1; }
+    out(`${c(C.red, '⛔ ')}${e.message}`); return 1;
+  }
   const names = Object.keys(lock.skills);
   if (jsonOut) {
     const skills = names.map((n) => { const e = lock.skills[n]; return { name: n, kind: e.kind, hash: e.hash, scannedAt: e.scannedAt, signed: !!(e.sig || e.signed), ...(e.detection ? { detection: e.detection } : {}) }; });
@@ -200,9 +218,10 @@ function runList() {
     return 0;
   }
   if (!names.length) { out(c(C.dim, `no pinned skills in ${lockPath}`)); return 0; }
+  const short = (s, n) => (typeof s === 'string' ? s.slice(0, n) : '?'); // a hand-edited entry may lack hash/scannedAt
   for (const n of names) {
     const e = lock.skills[n];
-    out(`${c(C.grn, '●')} ${c(C.bold, n)} ${c(C.dim, `${e.kind} · ${e.hash.slice(0, 12)} · ${e.scannedAt.slice(0, 10)}${e.detection ? ` · ${e.detection.engine} ${e.detection.version}` : ''}${e.sig ? ' · signed' : ''}`)}`);
+    out(`${c(C.grn, '●')} ${c(C.bold, n)} ${c(C.dim, `${e.kind || '?'} · ${short(e.hash, 12)} · ${short(e.scannedAt, 10)}${e.detection ? ` · ${e.detection.engine} ${e.detection.version}` : ''}${e.sig ? ' · signed' : ''}`)}`);
   }
   return 0;
 }
@@ -297,9 +316,16 @@ function runHookClaude() {
   const strict = !!opt('--strict', false);
   const deny = (msg) => { process.stderr.write(`canon: ${msg}\n`); return 2; };
   try {
-    let payload = {};
-    try { payload = JSON.parse(fs.readFileSync(0, 'utf8')); } catch {}
-    if ((payload.tool_name || '') !== 'Skill') return 0; // mis-wired matcher — never break other tools
+    let payload = null, parsed = true;
+    try { payload = JSON.parse(fs.readFileSync(0, 'utf8')); } catch { parsed = false; }
+    // A payload we couldn't read/parse is a HOOK ERROR, not a non-Skill call: we
+    // don't know what's being invoked. Fail CLOSED in strict (the decision table's
+    // "hook error → BLOCK"); allow in default (adoption-friendly). A successfully
+    // parsed NON-Skill object is a mis-wired matcher — return 0 in both modes so
+    // other tools never break.
+    if (!parsed || !payload || typeof payload !== 'object' || Array.isArray(payload))
+      return strict ? deny('unreadable hook payload — failing closed (strict)') : 0;
+    if (payload.tool_name !== 'Skill') return 0; // mis-wired matcher — never break other tools
     const name = payload.tool_input && payload.tool_input.skill;
     if (!name) return 0;
 
@@ -341,8 +367,13 @@ function runHookInstall() {
   const target = typeof explicit === 'string' ? explicit
     : (opt('--user', false) ? path.join(os.homedir(), '.claude', 'settings.json') : path.join('.claude', 'settings.json'));
   const cmdOverride = opt('--command', undefined);
+  // Pin to THIS version's git tag (released versions have one) — a supply-chain
+  // gate should not fetch a moving ref on every Skill call. Correct repo name
+  // (truecopy, not the legacy canon). Re-run `hook install` after upgrading to
+  // repoint; `--command` still overrides for a global-install / offline setup.
+  const ref = PKG_VERSION ? `#v${PKG_VERSION}` : '';
   const command = typeof cmdOverride === 'string' ? cmdOverride
-    : `npx -y github:askalf/canon hook claude${strict ? ' --strict' : ''}`;
+    : `npx -y github:askalf/truecopy${ref} hook claude${strict ? ' --strict' : ''}`;
 
   let settings = {};
   try { settings = JSON.parse(fs.readFileSync(target, 'utf8')); }
@@ -356,7 +387,7 @@ function runHookInstall() {
   const pre = settings.hooks.PreToolUse || (settings.hooks.PreToolUse = []);
 
   const ours = (h) => h && Array.isArray(h.hooks) && h.hooks.some((x) => x && typeof x.command === 'string' && x.command.includes('hook claude'));
-  const entry = { matcher: 'Skill', hooks: [{ type: 'command', command, timeout: 10 }] };
+  const entry = { matcher: 'Skill', hooks: [{ type: 'command', command, timeout: 20 }] }; // 20s: margin for a cold (pinned) npx fetch on the first gated call
   const i = pre.findIndex(ours);
   const action = i >= 0 ? 'updated' : 'installed';
   if (i >= 0) pre[i] = entry; else pre.push(entry);
