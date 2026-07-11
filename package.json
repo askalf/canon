@@ -14,10 +14,14 @@
   },
   "scripts": {
     "test": "node --test",
+    "fuzz": "node fuzz/run.mjs",
     "demo": "node demo/demo.mjs"
   },
   "dependencies": {
     "@askalf/redstamp": "github:askalf/redstamp#3da60b9d720cb3f152f3db906673be0a2f8116b7"
+  },
+  "devDependencies": {
+    "@jazzer.js/core": "^4.0.0"
   },
   "keywords": [
     "ai-agents",
