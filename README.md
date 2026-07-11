@@ -96,7 +96,7 @@ truecopy scan --marketplace ./clone     # audit a marketplace or plugin repo you
   "hooks": {
     "PreToolUse": [
       { "matcher": "Skill",
-        "hooks": [{ "type": "command", "command": "npx -y github:askalf/truecopy hook claude", "timeout": 10 }] }
+        "hooks": [{ "type": "command", "command": "npx -y github:askalf/truecopy#v0.6.2 hook claude", "timeout": 20 }] }
     ]
   }
 }
