@@ -29,6 +29,8 @@ jobs:
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
@@ -38,7 +40,17 @@ jobs:
         run: |
           set -euo pipefail
           expected=$(node -p "require('./package.json').version")
-          published=$(npm view @askalf/truecopy version 2>/dev/null || echo "(unpublished)")
+          # An E404 is "genuinely not on the registry" (real drift); any OTHER npm
+          # view failure is a registry/network issue and must NOT masquerade as
+          # drift (which would open a spurious issue).
+          if published=$(npm view @askalf/truecopy version 2>&1); then
+            :
+          elif printf '%s' "$published" | grep -q 'E404'; then
+            published="(unpublished)"
+          else
+            echo "::error::npm view failed (not an E404 — registry issue, not drift): $published"
+            exit 1
+          fi
           echo "expected=${expected}" >> "$GITHUB_OUTPUT"
           echo "published=${published}" >> "$GITHUB_OUTPUT"
           if [ "$expected" = "$published" ]; then
@@ -57,7 +69,9 @@ jobs:
           PUBLISHED: ${{ steps.check.outputs.published }}
         run: |
           marker='<!-- truecopy-npm-drift -->'
-          existing=$(gh issue list -R "${{ github.repository }}" --state open --search "in:body $marker" --json number --jq '.[0].number // ""')
+          # Dedup by LABEL, not a body search — issue search is index-lagged
+          # (minutes-to-hours), so two nearby runs could double-file.
+          existing=$(gh issue list -R "${{ github.repository }}" --state open --label npm-drift --json number --jq '.[0].number // ""')
           if [ -n "$existing" ]; then
             echo "Existing open drift issue #$existing — leaving alone."
             exit 0
@@ -94,8 +108,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          marker='<!-- truecopy-npm-drift -->'
-          open_issues=$(gh issue list -R "${{ github.repository }}" --state open --search "in:body $marker" --json number --jq '.[].number')
+          open_issues=$(gh issue list -R "${{ github.repository }}" --state open --label npm-drift --json number --jq '.[].number')
           for n in $open_issues; do
             gh issue close "$n" -R "${{ github.repository }}" --comment "Auto-closed: registry and master agree again ([run #${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}))."
           done
