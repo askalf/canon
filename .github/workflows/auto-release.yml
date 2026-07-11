@@ -55,18 +55,30 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Only gate on a bump for PUSH events, and compare against the push's actual
+      # previous tip (github.event.before), not HEAD~1 — a multi-commit push whose
+      # bump isn't the tip would otherwise strand the release. On a manual
+      # workflow_dispatch this step is skipped entirely, so a backfill relies only
+      # on the tag-exists gate above (the correct idempotency key).
       - name: Skip if version field didn't change in this push
         id: bumped
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && github.event_name == 'push'
         env:
           NEW: ${{ steps.version.outputs.version }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          old=$(git show "HEAD~1:package.json" 2>/dev/null | node -e "
-            let s = ''; process.stdin.on('data', d => s += d).on('end', () => {
-              try { console.log(JSON.parse(s).version); } catch { console.log(''); }
-            });
-          " || echo "")
+          old=""
+          # zeros = branch-create / no parent; an unreachable before (force-push)
+          # makes `git show` fail — either way, fall through to "bumped" (the tag
+          # gate still prevents a double-release).
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            old=$(git show "$BEFORE:package.json" 2>/dev/null | node -e "
+              let s = ''; process.stdin.on('data', d => s += d).on('end', () => {
+                try { console.log(JSON.parse(s).version); } catch { console.log(''); }
+              });
+            " || echo "")
+          fi
           echo "old=${old}"
           echo "new=${NEW}"
           if [ "$old" = "$NEW" ]; then
