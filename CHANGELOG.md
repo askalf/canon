@@ -4,7 +4,7 @@ All notable changes to **@askalf/truecopy** are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.0] - 2026-07-11
 
 ### Changed
 - **Default lock/trust filenames are now `truecopy.lock` / `truecopy.trust`**
