@@ -95,4 +95,8 @@ test('list: shows the pinned detection version when present; entries without one
   const [fsLine, legacyLine] = ['fs', 'legacy'].map((n) => run.stdout.split('\n').find((x) => x.includes(` ${n} `)));
   assert.ok(fsLine.includes(`redstamp ${detectionInfo().version}`), `detection version in: ${fsLine}`);
   assert.doesNotMatch(legacyLine, /redstamp/);
+  // and the machine-readable surface matches the human one
+  const json = JSON.parse(cli(['list', '--json', '--lock', lock]).stdout);
+  assert.deepEqual(json.skills.find((s) => s.name === 'fs').detection, detectionInfo());
+  assert.ok(!('detection' in json.skills.find((s) => s.name === 'legacy')));
 });

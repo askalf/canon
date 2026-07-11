@@ -192,7 +192,7 @@ function runList() {
   const lock = readLock(lockPath);
   const names = Object.keys(lock.skills);
   if (jsonOut) {
-    const skills = names.map((n) => { const e = lock.skills[n]; return { name: n, kind: e.kind, hash: e.hash, scannedAt: e.scannedAt, signed: !!(e.sig || e.signed) }; });
+    const skills = names.map((n) => { const e = lock.skills[n]; return { name: n, kind: e.kind, hash: e.hash, scannedAt: e.scannedAt, signed: !!(e.sig || e.signed), ...(e.detection ? { detection: e.detection } : {}) }; });
     out(JSON.stringify({ skills }));
     return 0;
   }
