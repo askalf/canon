@@ -63,6 +63,18 @@
     "note": "webhook signing-secret integration docs",
     "reviewed": "2026-07-09"
   },
+  "newrelic:finops": {
+    "hash": "889b263a31af7c5e252664ccd68449ff135674613b60ab7360f479677c5bc690",
+    "class": "defensive quoting",
+    "note": "vendor Security Rules block quotes 'ignore previous instructions'/'pretend you are a different agent' to teach resisting them — full-file review at catalog pin f8e5f8b (#77)",
+    "reviewed": "2026-07-20"
+  },
+  "newrelic:kubernetes": {
+    "hash": "e61cb4bebf0b2883bc9e3db3bc1dbbb705f3d3aa6bf6f4e816ecda14d73e1760",
+    "class": "defensive quoting",
+    "note": "same Security Rules block; 'exfiltration intent' = composite FP of the secrecy block + an example diagnosis naming a payments namespace — no send/destination, only tool is execute_nrql_query (#77)",
+    "reviewed": "2026-07-20"
+  },
   "posthog:setting-up-a-data-warehouse-source": {
     "granularity": "finding-files",
     "files": {
