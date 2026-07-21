@@ -34,6 +34,16 @@ RUN node pin-everything.mjs everything -- mcp-server-everything stdio > everythi
  && truecopy add everything.json --lock /app/truecopy.lock \
  && rm everything.json
 
+# Drop root. A supply-chain gate has no business running its own container as
+# uid 0: the process only needs to READ the lock and exec the downstream server,
+# so a container escape or a compromised downstream should not land on root.
+# node:22-slim ships an unprivileged `node` user (uid 1000). Everything the
+# runtime touches is world-readable and built above as root -- the globally
+# installed binaries under /usr/local and the lock at /app/truecopy.lock -- so
+# nothing needs chown'ing, and the gate never writes at runtime.
+# The docker workflow asserts `id -u != 0` on every build so this cannot regress.
+USER node
+
 # Enforce the pinned lock in front of the live server, over stdio.
 ENTRYPOINT ["truecopy-mcp", "--lock", "/app/truecopy.lock", "--name", "everything", \
             "--", "mcp-server-everything", "stdio"]
