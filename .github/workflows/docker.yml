@@ -1,0 +1,88 @@
+# Build the truecopy-mcp image AND RUN IT. A Dockerfile that only ever gets
+# built proves nothing: the failure mode that matters here is a gate that starts
+# fine and serves an EMPTY tools/list (an unpinned or broken lock drops every
+# tool), which a build-only check sails straight past. So this drives a real MCP
+# handshake over stdio against the built image and asserts the pinned tools come
+# back vetted.
+#
+# Nothing else in CI touches the Dockerfile, and the image is what image-hosting
+# MCP directories build from — so before this, it could rot silently.
+name: docker
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'Dockerfile.dockerignore'
+      - 'docker/**'
+      - '.github/workflows/docker.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'Dockerfile'
+      - 'Dockerfile.dockerignore'
+      - 'docker/**'
+      - '.github/workflows/docker.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Build the image
+        run: docker build -t truecopy-mcp:ci .
+
+      - name: It must not run as root
+        run: |
+          set -euo pipefail
+          uid="$(docker run --rm --entrypoint id truecopy-mcp:ci -u)"
+          echo "container uid: ${uid}"
+          if [ "${uid}" = "0" ]; then
+            echo "::error::image runs as root (uid 0) — a gate must drop privileges"
+            exit 1
+          fi
+
+      - name: The gate serves its pinned tools over stdio
+        run: |
+          set -euo pipefail
+          # An unpinned/broken lock makes the gate drop every tool, so an EMPTY
+          # tools/list is the regression to catch — not merely a clean startup.
+          out="$(printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | timeout 120 docker run -i --rm truecopy-mcp:ci 2>/dev/null || true)"
+
+          echo "--- server stdout ---"
+          echo "${out}" | head -c 2000
+          echo
+
+          node -e '
+            const raw = require("fs").readFileSync(0, "utf8");
+            const msgs = raw.split("\n").filter(Boolean).map((l) => {
+              try { return JSON.parse(l); } catch { return null; }
+            }).filter(Boolean);
+            const list = msgs.find((m) => m && m.id === 2 && m.result && Array.isArray(m.result.tools));
+            if (!list) {
+              console.error("no tools/list response — the gate did not complete an MCP handshake");
+              process.exit(1);
+            }
+            const names = list.result.tools.map((t) => t.name);
+            console.log("vetted tools served:", names.length, "->", names.join(", "));
+            if (!names.length) {
+              console.error("tools/list came back EMPTY — the lock is not pinning the downstream server");
+              process.exit(1);
+            }
+            if (!names.includes("echo")) {
+              console.error("expected the pinned reference-server tools (echo missing)");
+              process.exit(1);
+            }
+          ' <<< "${out}"
