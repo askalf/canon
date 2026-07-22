@@ -34,6 +34,9 @@ export function jsonUnescape(s) {
 
 // First source piece containing `text`, with the 1-based line it starts on.
 function find(text, pieces) {
+  // indexOf('') is 0 — an empty needle would "locate" in the first piece at
+  // line 1 and publish a fabricated citation. Nothing may reach find() empty.
+  if (!text) return null;
   for (const p of (pieces || [])) {
     const body = p && typeof p.text === 'string' ? p.text : '';
     const idx = body.indexOf(text);
@@ -42,16 +45,43 @@ function find(text, pieces) {
   return null;
 }
 
+// A detector match is a WINDOW into the stringified text, so its edge can fall
+// in the middle of an escape sequence and keep the opening backslash while its
+// partner character stays outside the window. That trailing backslash exists
+// nowhere in the source, and jsonUnescape cannot reverse it because a lone
+// backslash is not a complete escape.
+//
+// This is exactly what produced the long-standing `evidenceMismatches: 2` on the
+// live watch. Both were SENSITIVE_PATH hits on source that reads:
+//
+//     ".aws",                     (aws-core/launch-with-aws archive.py:45)
+//
+// stringified to `\".aws\",`, where the detector matched `.aws\` — the real four
+// bytes `.aws` plus the backslash that JSON added to escape the FOLLOWING quote.
+// Trailing backslashes come in pairs when the source genuinely contains one (`\\`),
+// so only an ODD number of them ends in a sliced escape; strip exactly that one.
+const stripSlicedEscape = (s) => {
+  const tail = /\\+$/.exec(s);
+  return tail && tail[0].length % 2 === 1 ? s.slice(0, -1) : s;
+};
+
 /** Locate a detector match in the pinned source. Returns the location AND the
  *  text as it actually appears in the file, so published evidence always quotes
- *  real bytes rather than an escaped intermediate. */
+ *  real bytes rather than an escaped intermediate.
+ *
+ *  Candidates are tried literal-first and each must still be found verbatim in
+ *  the pinned bytes, so the anti-confabulation guarantee is unchanged: these
+ *  fallbacks only stop a VERIFIABLE fragment from being discarded over an
+ *  artifact of how the detector views the text. Invented text still locates
+ *  nowhere and is still dropped and counted. */
 export function locate(match, pieces) {
-  const direct = find(match, pieces);
-  if (direct) return { ...direct, text: match };
-  const unescaped = jsonUnescape(match);
-  if (unescaped !== match) {
-    const via = find(unescaped, pieces);
-    if (via) return { ...via, text: unescaped };
+  const seen = new Set();
+  for (const cand of [match, jsonUnescape(match),
+                      stripSlicedEscape(match), jsonUnescape(stripSlicedEscape(match))]) {
+    if (!cand || seen.has(cand)) continue;
+    seen.add(cand);
+    const at = find(cand, pieces);
+    if (at) return { ...at, text: cand };
   }
   return null;
 }
